@@ -10,11 +10,10 @@
   },
   "preview_urls": false,
 
-  // Custom domain routing via workers.do zone
   "routes": [
     {
       "pattern": "payments.do/*",
-      "zone_name": "workers.do",
+      "zone_name": "payments.do",
     },
   ],
 }
