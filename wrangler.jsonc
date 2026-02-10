@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "payments-do",
+  "account_id": "b6641681fe423910342b9ffa1364c76d",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+  },
+  "preview_urls": false,
+
+  // Custom domain routing via workers.do zone
+  "routes": [
+    {
+      "pattern": "payments.do/*",
+      "zone_name": "workers.do",
+    },
+  ],
+}

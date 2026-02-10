@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "stripe": "^17.0.0",
-    "rpc.do": "^0.0.1"
+    "rpc.do": "^0.2.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240925.0",
