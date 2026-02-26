@@ -38,6 +38,8 @@
 import Stripe from 'stripe'
 import { env } from 'cloudflare:workers'
 import { RPC } from 'rpc.do'
+import { buildStripeEvent, buildImportEvent, emitStripeEvents } from './events'
+import type { NormalizedEvent } from './events'
 
 // ---------------------------------------------------------------------------
 // Lazy Stripe + RPC init
@@ -389,6 +391,57 @@ route('POST', '/refunds', async (request) => {
   return json(refund, 201)
 })
 
+// --- Baseline Import ---
+
+route('POST', '/import', async (request) => {
+  const body = await parseBody<{ ns?: string }>(request)
+  const ns = body.ns || request.headers.get('x-tenant') || 'default'
+  const stripe = getStripe()
+  const events: NormalizedEvent[] = []
+
+  // Import customers
+  for await (const customer of stripe.customers.list({ limit: 100 })) {
+    events.push(buildImportEvent({ ns, entityType: 'customer', entityId: customer.id, payload: customer as unknown as Record<string, unknown> }))
+  }
+
+  // Import subscriptions
+  for await (const sub of stripe.subscriptions.list({ limit: 100, status: 'all' })) {
+    events.push(buildImportEvent({ ns, entityType: 'subscription', entityId: sub.id, payload: sub as unknown as Record<string, unknown> }))
+  }
+
+  // Import products
+  for await (const product of stripe.products.list({ limit: 100 })) {
+    events.push(buildImportEvent({ ns, entityType: 'product', entityId: product.id, payload: product as unknown as Record<string, unknown> }))
+  }
+
+  // Import prices
+  for await (const price of stripe.prices.list({ limit: 100 })) {
+    events.push(buildImportEvent({ ns, entityType: 'price', entityId: price.id, payload: price as unknown as Record<string, unknown> }))
+  }
+
+  // Import invoices (last 1000)
+  for await (const invoice of stripe.invoices.list({ limit: 100 })) {
+    events.push(buildImportEvent({ ns, entityType: 'invoice', entityId: invoice.id, payload: invoice as unknown as Record<string, unknown> }))
+    if (events.length > 5000) break // Safety limit
+  }
+
+  // Emit in batches of 100
+  if (env.EVENTS) {
+    const BATCH_SIZE = 100
+    for (let i = 0; i < events.length; i += BATCH_SIZE) {
+      await emitStripeEvents(events.slice(i, i + BATCH_SIZE), env.EVENTS)
+    }
+  }
+
+  const counts: Record<string, number> = {}
+  for (const e of events) {
+    const t = e.data.entity
+    counts[t] = (counts[t] || 0) + 1
+  }
+
+  return json({ imported: true, total: events.length, counts })
+})
+
 // --- Webhooks ---
 
 route('POST', '/webhooks', async (request) => {
@@ -411,9 +464,27 @@ route('POST', '/webhooks', async (request) => {
     return error(`Webhook verification failed: ${sanitizeError(err)}`, 400)
   }
 
-  // Log the event — include connected account if present
+  // Extract entity ID from the event data object
   const account = (event as unknown as { account?: string }).account
+  const dataObj = event.data.object as Record<string, unknown>
+  const entityId = (dataObj.id as string) || event.id
+
   console.log(`[webhook] ${event.type} ${event.id}${account ? ` account=${account}` : ''}`)
+
+  // Emit normalized event to EVENTS pipeline
+  const ns = account || 'default'
+  const normalized = buildStripeEvent({
+    ns,
+    stripeEventType: event.type,
+    stripeEventId: event.id,
+    entityId,
+    payload: dataObj,
+    account: account || undefined,
+  })
+
+  if (env.EVENTS) {
+    await emitStripeEvents([normalized], env.EVENTS)
+  }
 
   return json({ received: true, type: event.type, account })
 })

@@ -16,4 +16,8 @@
       "zone_name": "payments.do",
     },
   ],
+
+  "services": [
+    { "binding": "EVENTS", "service": "events", "entrypoint": "EventsService" }
+  ],
 }
