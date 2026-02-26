@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@dotdo/events-sdk": "workspace:*",
     "stripe": "^17.0.0",
     "rpc.do": "^0.2.4"
   },
