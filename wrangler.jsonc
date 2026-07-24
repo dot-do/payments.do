@@ -28,8 +28,10 @@
   //     Stripe dashboard webhook endpoint https://payments.do/webhooks,
   //     event: checkout.session.completed)
   //   wrangler secret put VIN_SETTLE_TOKEN        (bearer for the vin ledger forward)
-  // Uncomment once the vin estate's settlement-confirm endpoint exists;
-  // unset, the webhook skips the forward and the events pipeline still
-  // carries the raw Stripe event:
-  // "vars": { "VIN_SETTLE_URL": "https://all.vin/_settle" },
+  // The vin estate's settlement-confirm endpoint landed (vin-c2p.21,
+  // vin repo commit ae77fef): POST all.vin/_settle. Until all.vin DNS +
+  // the estate's LEDGER binding land, the forward fails loudly (500 to
+  // Stripe) and settlements replay via Stripe redelivery — by design
+  // (vin activation runbook §3).
+  "vars": { "VIN_SETTLE_URL": "https://all.vin/_settle" },
 }
