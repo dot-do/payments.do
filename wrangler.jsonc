@@ -33,5 +33,10 @@
   // the estate's LEDGER binding land, the forward fails loudly (500 to
   // Stripe) and settlements replay via Stripe redelivery — by design
   // (vin activation runbook §3).
-  "vars": { "VIN_SETTLE_URL": "https://all.vin/_settle" },
+  // REHEARSAL (2026-07-24, vin TEST-DOLLAR rehearsal): pointed at the estate
+  // Worker's workers.dev demo host while all.vin routes are unapplied. The
+  // ?__host=all.vin override satisfies the settle handler's host gate
+  // (DEMO=1 deploy). MUST flip back to https://all.vin/_settle after the
+  // founder's route apply (vin docs/ops/payments-do-activation-runbook.md).
+  "vars": { "VIN_SETTLE_URL": "https://vin-site.dotdo.workers.dev/_settle?__host=all.vin" },
 }
