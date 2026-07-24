@@ -34,6 +34,17 @@ import { payments } from 'payments.do'
 await payments.charges.create({ amount: 2000, currency: 'usd', customer: 'cus_123' })
 ```
 
+## Vin estate checkout (PW-5)
+
+`GET /checkout?sku=…&vin=…&door=…&return_to=…` is the vin estate's thin
+first-dollar front (`src/checkout.ts`): closed SKU table → Stripe Checkout
+Session → 303. `POST /webhooks` forwards PAID vin sessions (metadata
+`estate: "vin"`) to `VIN_SETTLE_URL` with the PaymentIntent id as
+`settlement_ref`; a configured-but-failed forward answers 500 so Stripe
+redelivers.
+
 ## Secrets
 
-- `STRIPE_SECRET_KEY` — Stripe API key (required)
+- `STRIPE_SECRET_KEY` — Stripe API key (required; founder act)
+- `STRIPE_WEBHOOK_SECRET` — webhook signing secret (required for /webhooks; founder act)
+- `VIN_SETTLE_TOKEN` — bearer for the vin settlement forward (optional; founder act)

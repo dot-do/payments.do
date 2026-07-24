@@ -16,7 +16,7 @@
  * ```
  */
 
-import { createClient, type ClientOptions } from 'rpc.do'
+import { createRPCClient, type RPCClientOptions } from 'rpc.do'
 
 // Types
 export interface Customer {
@@ -117,8 +117,10 @@ export interface PaymentsClient {
  * const payments = Payments({ apiKey: 'xxx' })
  * ```
  */
-export function Payments(options?: ClientOptions): PaymentsClient {
-  return createClient<PaymentsClient>('https://payments.do', options)
+export function Payments(options?: Omit<RPCClientOptions, 'baseUrl'>): PaymentsClient {
+  // rpc.do 0.2.x moved to an options-object factory (RPCClientOptions);
+  // the proxy's runtime contract is unchanged — retype, don't rewrap.
+  return createRPCClient<PaymentsClient>({ baseUrl: 'https://payments.do', ...options }) as unknown as PaymentsClient
 }
 
 /**
@@ -133,9 +135,6 @@ export function Payments(options?: ClientOptions): PaymentsClient {
  */
 export const payments: PaymentsClient = Payments()
 
-// Named exports
-export { Payments, payments }
-
 // Default export = camelCase instance
 export default payments
 
@@ -143,4 +142,4 @@ export default payments
 export const createPayments = Payments
 
 // Re-export types
-export type { ClientOptions } from 'rpc.do'
+export type { RPCClientOptions } from 'rpc.do'

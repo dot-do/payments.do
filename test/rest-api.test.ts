@@ -131,11 +131,15 @@ describe('POST /customers — Create customer', () => {
     expect(status).toBe(201)
     expect(data.id).toBe('cus_test123')
     expect(data.email).toBe('alice@example.com')
-    expect(mockCustomersCreate).toHaveBeenCalledWith({
-      email: 'alice@example.com',
-      name: 'Alice',
-      metadata: { contactId: 'contact_1' },
-    })
+    // Second arg: Stripe Connect request options — undefined on the platform account.
+    expect(mockCustomersCreate).toHaveBeenCalledWith(
+      {
+        email: 'alice@example.com',
+        name: 'Alice',
+        metadata: { contactId: 'contact_1' },
+      },
+      undefined,
+    )
   })
 
   it('returns 400 for invalid JSON body', async () => {
@@ -162,7 +166,7 @@ describe('GET /customers/:id — Retrieve customer', () => {
     const { status, data } = await fetchJSON('GET', '/customers/cus_test456')
     expect(status).toBe(200)
     expect(data.id).toBe('cus_test456')
-    expect(mockCustomersRetrieve).toHaveBeenCalledWith('cus_test456')
+    expect(mockCustomersRetrieve).toHaveBeenCalledWith('cus_test456', undefined)
   })
 })
 
@@ -183,10 +187,13 @@ describe('POST /subscriptions — Create subscription', () => {
     expect(status).toBe(201)
     expect(data.id).toBe('sub_test789')
     expect(data.status).toBe('active')
-    expect(mockSubscriptionsCreate).toHaveBeenCalledWith({
-      customer: 'cus_test123',
-      items: [{ price: 'price_pro' }],
-    })
+    expect(mockSubscriptionsCreate).toHaveBeenCalledWith(
+      {
+        customer: 'cus_test123',
+        items: [{ price: 'price_pro' }],
+      },
+      undefined,
+    )
   })
 })
 
@@ -213,7 +220,7 @@ describe('DELETE /subscriptions/:id — Cancel subscription', () => {
     const { status, data } = await fetchJSON('DELETE', '/subscriptions/sub_test789')
     expect(status).toBe(200)
     expect(data.status).toBe('canceled')
-    expect(mockSubscriptionsCancel).toHaveBeenCalledWith('sub_test789')
+    expect(mockSubscriptionsCancel).toHaveBeenCalledWith('sub_test789', undefined, undefined)
   })
 })
 

@@ -20,4 +20,16 @@
   "services": [
     { "binding": "EVENTS", "service": "events", "entrypoint": "EventsService" }
   ],
+
+  // Vin estate checkout (vin platform-wiring ADR PW-5; vin beads vin-zik).
+  // Secrets are FOUNDER acts on the deployed Worker — never committed here:
+  //   wrangler secret put STRIPE_SECRET_KEY       (PW-5 step 1)
+  //   wrangler secret put STRIPE_WEBHOOK_SECRET   (PW-5 step 1; from the
+  //     Stripe dashboard webhook endpoint https://payments.do/webhooks,
+  //     event: checkout.session.completed)
+  //   wrangler secret put VIN_SETTLE_TOKEN        (bearer for the vin ledger forward)
+  // Uncomment once the vin estate's settlement-confirm endpoint exists;
+  // unset, the webhook skips the forward and the events pipeline still
+  // carries the raw Stripe event:
+  // "vars": { "VIN_SETTLE_URL": "https://all.vin/_settle" },
 }

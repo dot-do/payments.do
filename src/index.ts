@@ -40,13 +40,25 @@ import { env } from 'cloudflare:workers'
 import { RPC } from 'rpc.do'
 import { buildStripeEvent, buildImportEvent, emitStripeEvents } from './events'
 import type { NormalizedEvent } from './events'
+import {
+  forwardVinSettlement,
+  parseVinCheckout,
+  vinCheckoutSessionParams,
+  vinSettlementFromSession,
+} from './checkout'
 
 // ---------------------------------------------------------------------------
 // Lazy Stripe + RPC init
 // ---------------------------------------------------------------------------
 
 let _stripe: Stripe | null = null
-let _rpc: ReturnType<typeof RPC> | null = null
+
+/** The RPC fallback's runtime surface — rpc.do 0.2.x no longer types `fetch`. */
+interface RpcFallback {
+  fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response>
+}
+
+let _rpc: RpcFallback | null = null
 
 function getStripe(): Stripe {
   if (!_stripe) {
@@ -58,9 +70,12 @@ function getStripe(): Stripe {
   return _stripe
 }
 
-function getRpc(): ReturnType<typeof RPC> {
+function getRpc(): RpcFallback {
   if (!_rpc) {
-    _rpc = RPC(getStripe())
+    // rpc.do 0.2.x retyped RPC() around transports; the deployed capnweb
+    // fallback wraps the Stripe SDK object directly (runtime contract
+    // unchanged) — cast across the drift rather than fork the surface.
+    _rpc = RPC(getStripe() as unknown as Parameters<typeof RPC>[0]) as unknown as RpcFallback
   }
   return _rpc
 }
@@ -215,6 +230,7 @@ route('GET', '/', async () => {
       products: { create: 'POST /products', retrieve: 'GET /products/:id', update: 'PATCH /products/:id' },
       prices: { create: 'POST /prices', retrieve: 'GET /prices/:id' },
       refunds: { create: 'POST /refunds' },
+      checkout: 'GET /checkout?sku=…&vin=…&door=…&return_to=… → 303 to Stripe Checkout (vin estate gatefold; PW-5)',
       webhooks: 'POST /webhooks',
     },
   })
@@ -350,7 +366,7 @@ route('POST', '/invoices/:id/void', async (request, params) => {
 route('POST', '/products', async (request) => {
   const body = await parseBody<Record<string, unknown>>(request)
   const opts = getConnectOptions(request, body)
-  const product = await getStripe().products.create(stripConnectField(body) as Stripe.ProductCreateParams, opts)
+  const product = await getStripe().products.create(stripConnectField(body) as unknown as Stripe.ProductCreateParams, opts)
   return json(product, 201)
 })
 
@@ -372,7 +388,7 @@ route('PATCH', '/products/:id', async (request, params) => {
 route('POST', '/prices', async (request) => {
   const body = await parseBody<Record<string, unknown>>(request)
   const opts = getConnectOptions(request, body)
-  const price = await getStripe().prices.create(stripConnectField(body) as Stripe.PriceCreateParams, opts)
+  const price = await getStripe().prices.create(stripConnectField(body) as unknown as Stripe.PriceCreateParams, opts)
   return json(price, 201)
 })
 
@@ -442,6 +458,28 @@ route('POST', '/import', async (request) => {
   return json({ imported: true, total: events.length, counts })
 })
 
+// --- Vin estate checkout (vin platform-wiring ADR PW-5; vin beads vin-zik) ---
+
+// The thin first-dollar front: the vin gatefold's OFFER links here; this GET
+// becomes a Stripe Checkout Session and answers 303 to Stripe's hosted page.
+// Prices come from the closed table in src/checkout.ts — the query string
+// never carries a price. Refusals are 400 with the reason stated.
+route('GET', '/checkout', async (request) => {
+  const parsed = parseVinCheckout(new URL(request.url))
+  if (!parsed.ok) {
+    return error(parsed.error, 400)
+  }
+  if (!env.STRIPE_SECRET_KEY) {
+    // Deployed but unconfigured — activation is a founder act (PW-5 step 1).
+    return error('payments.do is deployed but unconfigured. Founder act: wrangler secret put STRIPE_SECRET_KEY', 503)
+  }
+  const session = await getStripe().checkout.sessions.create(vinCheckoutSessionParams(parsed.intent))
+  if (!session.url) {
+    return error('Stripe created the session but returned no redirect URL', 502)
+  }
+  return new Response(null, { status: 303, headers: { Location: session.url } })
+})
+
 // --- Webhooks ---
 
 route('POST', '/webhooks', async (request) => {
@@ -466,7 +504,7 @@ route('POST', '/webhooks', async (request) => {
 
   // Extract entity ID from the event data object
   const account = (event as unknown as { account?: string }).account
-  const dataObj = event.data.object as Record<string, unknown>
+  const dataObj = event.data.object as unknown as Record<string, unknown>
   const entityId = (dataObj.id as string) || event.id
 
   console.log(`[webhook] ${event.type} ${event.id}${account ? ` account=${account}` : ''}`)
@@ -484,6 +522,32 @@ route('POST', '/webhooks', async (request) => {
 
   if (env.EVENTS) {
     await emitStripeEvents([normalized], env.EVENTS)
+  }
+
+  // The vin settlement leg (PW-5 step 2 / vin-zik): a PAID vin-estate checkout
+  // session forwards a compact settlement confirmation — Checkout Session id
+  // as order_id, PaymentIntent id as settlement_ref (vin ledger-events §4.4)
+  // — to VIN_SETTLE_URL. Unset URL → skip (the events pipeline above still
+  // carries the raw Stripe event); configured but failing → 500 so Stripe
+  // redelivers (at-least-once; the estate dedupes by order_id).
+  if (event.type === 'checkout.session.completed') {
+    const settlement = vinSettlementFromSession(dataObj, event.livemode)
+    if (settlement) {
+      const forward = await forwardVinSettlement(settlement, {
+        url: env.VIN_SETTLE_URL,
+        token: env.VIN_SETTLE_TOKEN,
+      })
+      if (env.VIN_SETTLE_URL && !forward.forwarded) {
+        console.log(`[webhook] vin settlement forward failed (${forward.status ?? forward.reason}) — answering 500 so Stripe redelivers`)
+        return error('vin settlement forward failed — Stripe will redeliver', 500)
+      }
+      return json({
+        received: true,
+        type: event.type,
+        account,
+        vin: { order_id: settlement.order_id, settlement_ref: settlement.settlement_ref, forwarded: forward.forwarded },
+      })
+    }
   }
 
   return json({ received: true, type: event.type, account })
