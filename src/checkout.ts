@@ -181,6 +181,10 @@ export function vinSettlementFromSession(
 ): VinSettlement | null {
   const metadata = (session.metadata ?? null) as Record<string, string> | null
   if (metadata?.estate !== 'vin') return null
+  // Deal sessions (kind=deal) settle on the deal door's own settle leg
+  // (src/deal-checkout.ts) — never on the fixed-price /_settle forward, whose
+  // closed SKU table would refuse them.
+  if (metadata.kind === 'deal') return null
   if (session.payment_status !== 'paid') return null
   const pi = session.payment_intent
   const settlementRef =

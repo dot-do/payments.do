@@ -43,6 +43,20 @@ Session → 303. `POST /webhooks` forwards PAID vin sessions (metadata
 `settlement_ref`; a configured-but-failed forward answers 500 so Stripe
 redelivers.
 
+## Vin deal checkout (variable amount)
+
+`GET /checkout?sku=deal&deal=…&link=…&vin=…&door=…&return_to=…` is the
+variable-amount deal leg (`src/deal-checkout.ts`): the amount is fetched
+server-side from the deal door's posted OFFER
+(`https://{door}/buy/deals/{deal}/checkout.json?link=…` — door from the
+CLOSED `VIN_DEAL_DOORS` table, currently `apis.vin`), verified open and
+naming the asked payment link, then priced into a Stripe Checkout Session →
+303. The query string never carries a price. PAID deal sessions (metadata
+`kind: "deal"`) forward to the deal door's own settle leg —
+`POST https://{door}/buy/deals/{deal}/settle`, bearer `VIN_SETTLE_TOKEN` —
+where the estate refuses any amount that disagrees with the desked
+cash-to-close and dedupes by `order_id`.
+
 ## Secrets
 
 - `STRIPE_SECRET_KEY` — Stripe API key (required; founder act)

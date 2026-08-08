@@ -24,7 +24,12 @@ declare global {
       EVENTS?: unknown
       /** Vin estate settlement-confirm endpoint (var; unset → skip forward). */
       VIN_SETTLE_URL?: string
-      /** Bearer token for the vin settlement forward (secret; founder act). */
+      /**
+       * Bearer token for the vin settlement forwards (secret; founder act):
+       * the fixed-price /_settle leg AND the deal doors' own settle legs
+       * (deal-checkout.ts) — the vin estate configures the SAME operator
+       * token on its settle receivers.
+       */
       VIN_SETTLE_TOKEN?: string
     }
   }
