@@ -46,6 +46,14 @@ import {
   vinCheckoutSessionParams,
   vinSettlementFromSession,
 } from './checkout'
+import {
+  DEAL_SKU,
+  fetchVinDealOffer,
+  forwardVinDealSettlement,
+  parseVinDealCheckout,
+  vinDealCheckoutSessionParams,
+  vinDealSettlementFromSession,
+} from './deal-checkout'
 
 // ---------------------------------------------------------------------------
 // Lazy Stripe + RPC init
@@ -230,7 +238,9 @@ route('GET', '/', async () => {
       products: { create: 'POST /products', retrieve: 'GET /products/:id', update: 'PATCH /products/:id' },
       prices: { create: 'POST /prices', retrieve: 'GET /prices/:id' },
       refunds: { create: 'POST /refunds' },
-      checkout: 'GET /checkout?sku=…&vin=…&door=…&return_to=… → 303 to Stripe Checkout (vin estate gatefold; PW-5)',
+      checkout:
+        'GET /checkout?sku=…&vin=…&door=…&return_to=… → 303 to Stripe Checkout (vin estate gatefold; PW-5). ' +
+        'Deal leg: sku=deal&deal=…&link=… prices from the deal door’s posted OFFER (variable amount; never the query string)',
       webhooks: 'POST /webhooks',
     },
   })
@@ -465,7 +475,32 @@ route('POST', '/import', async (request) => {
 // Prices come from the closed table in src/checkout.ts — the query string
 // never carries a price. Refusals are 400 with the reason stated.
 route('GET', '/checkout', async (request) => {
-  const parsed = parseVinCheckout(new URL(request.url))
+  const url = new URL(request.url)
+
+  // The variable-amount deal leg (sku=deal): the amount comes from the deal
+  // door's posted OFFER, fetched server-side — never from the query string.
+  if (url.searchParams.get('sku') === DEAL_SKU) {
+    const parsed = parseVinDealCheckout(url)
+    if (!parsed.ok) {
+      return error(parsed.error, 400)
+    }
+    if (!env.STRIPE_SECRET_KEY) {
+      return error('payments.do is deployed but unconfigured. Founder act: wrangler secret put STRIPE_SECRET_KEY', 503)
+    }
+    const fetched = await fetchVinDealOffer(parsed.intent)
+    if (!fetched.ok) {
+      return error(fetched.error, fetched.status)
+    }
+    const session = await getStripe().checkout.sessions.create(
+      vinDealCheckoutSessionParams(parsed.intent, fetched.offer),
+    )
+    if (!session.url) {
+      return error('Stripe created the session but returned no redirect URL', 502)
+    }
+    return new Response(null, { status: 303, headers: { Location: session.url } })
+  }
+
+  const parsed = parseVinCheckout(url)
   if (!parsed.ok) {
     return error(parsed.error, 400)
   }
@@ -531,6 +566,34 @@ route('POST', '/webhooks', async (request) => {
   // carries the raw Stripe event); configured but failing → 500 so Stripe
   // redelivers (at-least-once; the estate dedupes by order_id).
   if (event.type === 'checkout.session.completed') {
+    // The deal leg first: a PAID vin DEAL session (metadata kind=deal)
+    // forwards to the deal's OWN settle door — POST
+    // https://{door}/buy/deals/{deal}/settle (closed door table; bearer
+    // VIN_SETTLE_TOKEN). The door refuses any amount that disagrees with the
+    // desked cash-to-close and dedupes by order_id; a failed forward answers
+    // Stripe 500 so the event redelivers.
+    const dealSettlement = vinDealSettlementFromSession(dataObj, event.livemode)
+    if (dealSettlement) {
+      const forward = await forwardVinDealSettlement(dealSettlement, { token: env.VIN_SETTLE_TOKEN })
+      if (!forward.forwarded) {
+        console.log(
+          `[webhook] vin deal settlement forward failed (${forward.status ?? forward.reason}) — answering 500 so Stripe redelivers`,
+        )
+        return error('vin deal settlement forward failed — Stripe will redeliver', 500)
+      }
+      return json({
+        received: true,
+        type: event.type,
+        account,
+        vin_deal: {
+          deal: dealSettlement.deal,
+          order_id: dealSettlement.order_id,
+          settlement_ref: dealSettlement.settlement_ref,
+          forwarded: forward.forwarded,
+        },
+      })
+    }
+
     const settlement = vinSettlementFromSession(dataObj, event.livemode)
     if (settlement) {
       const forward = await forwardVinSettlement(settlement, {
