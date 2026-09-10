@@ -63,6 +63,7 @@ vi.mock('cloudflare:workers', () => ({
     STRIPE_WEBHOOK_SECRET: 'whsec_test_mock',
     PAYMENTS_API_TOKEN: 'tok_test_caller_secret',
   },
+  WorkerEntrypoint: class {},
 }))
 
 vi.mock('rpc.do', () => ({
