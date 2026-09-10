@@ -6,6 +6,8 @@
  *   wrangler secret put STRIPE_SECRET_KEY       (PW-5 step 1)
  *   wrangler secret put STRIPE_WEBHOOK_SECRET   (PW-5 step 1)
  *   wrangler secret put VIN_SETTLE_TOKEN        (bearer for the vin ledger confirm forward)
+ *   wrangler secret put PAYMENTS_API_TOKEN      (inbound bearer every caller must present;
+ *                                                unset → every gated route answers 401)
  *
  * Vars (wrangler.jsonc):
  *   VIN_SETTLE_URL — the vin estate settlement-confirm endpoint the webhook
@@ -26,6 +28,12 @@ declare global {
       VIN_SETTLE_URL?: string
       /** Bearer token for the vin settlement forward (secret; founder act). */
       VIN_SETTLE_TOKEN?: string
+      /**
+       * Inbound caller bearer (secret; founder act). Every route outside the
+       * PUBLIC_ROUTES allowlist in src/index.ts requires
+       * `Authorization: Bearer <PAYMENTS_API_TOKEN>`. Unset → fail closed (401).
+       */
+      PAYMENTS_API_TOKEN?: string
     }
   }
 }

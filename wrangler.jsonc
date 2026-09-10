@@ -28,6 +28,10 @@
   //     Stripe dashboard webhook endpoint https://payments.do/webhooks,
   //     event: checkout.session.completed)
   //   wrangler secret put VIN_SETTLE_TOKEN        (bearer for the vin ledger forward)
+  //   wrangler secret put PAYMENTS_API_TOKEN      (inbound caller bearer, payments.do#2;
+  //     every route except POST /webhooks and GET /checkout answers 401
+  //     without it — set it BEFORE deploying this worker, then update the
+  //     consumers that bind `payments-do` to send it)
   // The vin estate's settlement-confirm endpoint landed (vin-c2p.21,
   // vin repo commit ae77fef): POST all.vin/_settle. Until all.vin DNS +
   // the estate's LEDGER binding land, the forward fails loudly (500 to
