@@ -196,6 +196,35 @@ const payments = Payments()
 // API key resolved automatically from PAYMENTS_API_KEY or DO_API_KEY
 ```
 
+## Calling the Worker Directly
+
+The deployed worker (`payments.do`) authenticates every caller. Send
+`Authorization: Bearer <PAYMENTS_API_TOKEN>` on every request — from a
+Cloudflare service binding as well as from the public hostname; a binding
+is not a credential. The only routes that do not take the bearer are
+`POST /webhooks` (Stripe-Signature verified) and the buyer-facing
+`GET /checkout`.
+
+```typescript
+// From a Worker that binds payments-do
+const res = await env.PAYMENTS.fetch('https://payments.do/customers', {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${env.PAYMENTS_API_TOKEN}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ email: 'user@company.com' }),
+})
+```
+
+Without the header (or with the wrong one) the worker answers
+`401 { "error": "unauthorized", "code": "missing_bearer" | "invalid_bearer" }`.
+If the secret is not set on the worker at all, every gated route answers
+`401 { "code": "token_unconfigured" }` — the gate fails closed.
+
+Operators set the secret once with `wrangler secret put PAYMENTS_API_TOKEN`
+and give the same value to each consumer worker.
+
 ## Full API Reference
 
 ### Customers
