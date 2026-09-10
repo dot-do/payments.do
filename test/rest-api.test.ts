@@ -61,6 +61,7 @@ vi.mock('cloudflare:workers', () => ({
   env: {
     STRIPE_SECRET_KEY: 'sk_test_mock',
     STRIPE_WEBHOOK_SECRET: 'whsec_test_mock',
+    PAYMENTS_API_TOKEN: 'tok_test_caller_secret',
   },
 }))
 
@@ -84,10 +85,13 @@ beforeEach(async () => {
   worker = await import('../src/index.js')
 })
 
+// Every non-public route requires the caller bearer (see test/auth-gate.test.ts).
+const AUTH = { Authorization: 'Bearer tok_test_caller_secret' }
+
 function makeRequest(method: string, path: string, body?: unknown): Request {
-  const init: RequestInit = { method }
+  const init: RequestInit = { method, headers: AUTH }
   if (body) {
-    init.headers = { 'Content-Type': 'application/json' }
+    init.headers = { ...AUTH, 'Content-Type': 'application/json' }
     init.body = JSON.stringify(body)
   }
   return new Request(`https://payments.do${path}`, init)
@@ -145,7 +149,7 @@ describe('POST /customers — Create customer', () => {
   it('returns 400 for invalid JSON body', async () => {
     const request = new Request('https://payments.do/customers', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...AUTH, 'Content-Type': 'application/json' },
       body: '{invalid json',
     })
 

@@ -26,16 +26,23 @@
  *   POST   /webhooks                → Stripe webhook verification + processing
  *   GET    /                        → Health check / discovery
  *
- * Stripe Connect multi-tenant scoping:
- *   All endpoints accept a `Stripe-Account` header (or `stripeAccount` field in
- *   request body) to scope API calls to a connected account. This enables
- *   per-tenant billing where each tenant has their own Stripe account linked
- *   via Stripe Connect.
+ * Caller authentication (dot-do/payments.do#2):
+ *   Every route except the PUBLIC_ROUTES allowlist (`POST /webhooks`,
+ *   `GET /checkout`) requires `Authorization: Bearer <PAYMENTS_API_TOKEN>`.
+ *   Service-binding consumers must send it too — a binding is not a
+ *   credential. Unset secret → every gated route answers 401 (fail closed).
  *
- * Capnweb RPC clients (e.g. `payments.do` SDK) use the RPC fallback.
+ * Stripe Connect multi-tenant scoping (authenticated callers only):
+ *   Gated endpoints accept a `Stripe-Account` header (or `stripeAccount` field
+ *   in request body) to scope API calls to a connected account. This enables
+ *   per-tenant billing where each tenant has their own Stripe account linked
+ *   via Stripe Connect. The pivot is refused on unauthenticated requests.
+ *
+ * Capnweb RPC clients (e.g. `payments.do` SDK) use the RPC fallback (gated).
  */
 
 import Stripe from 'stripe'
+import { timingSafeEqual } from 'node:crypto'
 import { env } from 'cloudflare:workers'
 import { RPC } from 'rpc.do'
 import { buildStripeEvent, buildImportEvent, emitStripeEvents } from './events'
@@ -157,6 +164,73 @@ function stripConnectField<T extends Record<string, unknown>>(body: T): Omit<T, 
   if (!('stripeAccount' in body)) return body
   const { stripeAccount: _, ...rest } = body
   return rest as Omit<T, 'stripeAccount'>
+}
+
+// ---------------------------------------------------------------------------
+// Caller auth gate (dot-do/payments.do#2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Routes reachable without `Authorization: Bearer <PAYMENTS_API_TOKEN>`.
+ * Every other path — every Stripe pass-through route, the health check, and
+ * the RPC fallback — is gated. Keep this list as small as possible and name
+ * the reason for each entry.
+ */
+const PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
+  // Called by Stripe, which cannot carry our bearer; authenticated by the
+  // Stripe-Signature header (webhooks.constructEvent, STRIPE_WEBHOOK_SECRET).
+  { method: 'POST', path: '/webhooks' },
+  // Buyer-facing first-dollar front (vin gatefold → 303 to Stripe Checkout):
+  // a browser navigation with no way to hold a credential. Safe to expose
+  // because the amount comes from the closed SKU table, never the query.
+  { method: 'GET', path: '/checkout' },
+]
+
+/** JSON body of every 401 the gate emits. */
+export interface AuthErrorBody {
+  error: 'unauthorized'
+  code: 'missing_bearer' | 'invalid_bearer' | 'token_unconfigured' | 'connect_requires_auth'
+}
+
+function isPublicRoute(method: string, pathname: string): boolean {
+  return PUBLIC_ROUTES.some((r) => r.method === method && r.path === pathname)
+}
+
+function unauthorized(code: AuthErrorBody['code']): Response {
+  const body: AuthErrorBody = { error: 'unauthorized', code }
+  return Response.json(body, { status: 401, headers: { 'WWW-Authenticate': 'Bearer realm="payments.do"' } })
+}
+
+/** Constant-time string equality; length mismatch short-circuits (length is not secret). */
+function tokensEqual(a: string, b: string): boolean {
+  const ab = new TextEncoder().encode(a)
+  const bb = new TextEncoder().encode(b)
+  if (ab.byteLength !== bb.byteLength) return false
+  return timingSafeEqual(ab, bb)
+}
+
+let warnedTokenUnconfigured = false
+
+/**
+ * Decide whether the caller may reach a gated route.
+ *
+ * Fails CLOSED: when PAYMENTS_API_TOKEN is unset every gated route answers 401
+ * (logged once), so a deploy that forgets the secret cannot reopen the hole.
+ */
+function authenticateCaller(request: Request): { ok: true } | { ok: false; code: AuthErrorBody['code'] } {
+  const expected = env.PAYMENTS_API_TOKEN
+  if (!expected) {
+    if (!warnedTokenUnconfigured) {
+      warnedTokenUnconfigured = true
+      console.error('[auth] PAYMENTS_API_TOKEN is not configured; refusing every gated route. Run: wrangler secret put PAYMENTS_API_TOKEN')
+    }
+    return { ok: false, code: 'token_unconfigured' }
+  }
+  const header = request.headers.get('Authorization') ?? ''
+  const match = /^Bearer\s+(\S+)$/i.exec(header)
+  if (!match) return { ok: false, code: 'missing_bearer' }
+  if (!tokensEqual(match[1], expected)) return { ok: false, code: 'invalid_bearer' }
+  return { ok: true }
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +635,20 @@ export default {
   async fetch(request: Request, envArg: unknown, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
     const pathname = url.pathname
+
+    // Caller auth gate — runs before any route (including the RPC fallback)
+    // so nothing below can reach Stripe without a bearer, except the
+    // PUBLIC_ROUTES allowlist.
+    if (!isPublicRoute(request.method, pathname)) {
+      const auth = authenticateCaller(request)
+      if (!auth.ok) return unauthorized(auth.code)
+    } else if (request.headers.get('Stripe-Account') && !authenticateCaller(request).ok) {
+      // Connected-account pivot is for authenticated callers only. Public
+      // routes never read it (checkout has no body; the webhook body is a
+      // Stripe-signed event), but refuse it here so that stays true if the
+      // allowlist ever grows.
+      return unauthorized('connect_requires_auth')
+    }
 
     // Try REST routes first
     const matched = matchRoute(request.method, pathname)
