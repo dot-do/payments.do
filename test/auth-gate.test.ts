@@ -36,7 +36,7 @@ vi.mock('stripe', () => {
   return { default: MockStripe, Stripe: MockStripe }
 })
 
-vi.mock('cloudflare:workers', () => ({ env: mockEnv }))
+vi.mock('cloudflare:workers', () => ({ env: mockEnv, WorkerEntrypoint: class {} }))
 
 vi.mock('rpc.do', () => ({
   RPC: vi.fn().mockReturnValue({

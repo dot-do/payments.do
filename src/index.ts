@@ -29,8 +29,13 @@
  * Caller authentication (dot-do/payments.do#2):
  *   Every route except the PUBLIC_ROUTES allowlist (`POST /webhooks`,
  *   `GET /checkout`) requires `Authorization: Bearer <PAYMENTS_API_TOKEN>`.
- *   Service-binding consumers must send it too — a binding is not a
- *   credential. Unset secret → every gated route answers 401 (fail closed).
+ *   That secret is deliberately never set, so every gated route answers 401
+ *   (fail closed): the public hostname serves only the two public routes.
+ *
+ * Service-binding consumers use the `PaymentsInternal` RPC entrypoint
+ * (exported below; src/rpc-types.ts is its contract) — typed methods, no
+ * fetch handler, no bearer. Only Workers on this account can bind it, so the
+ * binding itself is the authorization boundary.
  *
  * Stripe Connect multi-tenant scoping (authenticated callers only):
  *   Gated endpoints accept a `Stripe-Account` header (or `stripeAccount` field
@@ -43,8 +48,18 @@
 
 import Stripe from 'stripe'
 import { timingSafeEqual } from 'node:crypto'
-import { env } from 'cloudflare:workers'
+import { env, WorkerEntrypoint } from 'cloudflare:workers'
 import { RPC } from 'rpc.do'
+import * as ops from './operations'
+import { getStripe, sanitizeError, stripeErrorStatus } from './operations'
+import type {
+  CreateCustomerInput,
+  CreateSubscriptionInput,
+  PaymentsInternalApi,
+  RetrieveInput,
+  StripeObjectRef,
+  SubscriptionRef,
+} from './rpc-types'
 import { buildStripeEvent, buildImportEvent, emitStripeEvents } from './events'
 import type { NormalizedEvent } from './events'
 import {
@@ -58,24 +73,12 @@ import {
 // Lazy Stripe + RPC init
 // ---------------------------------------------------------------------------
 
-let _stripe: Stripe | null = null
-
 /** The RPC fallback's runtime surface — rpc.do 0.2.x no longer types `fetch`. */
 interface RpcFallback {
   fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response>
 }
 
 let _rpc: RpcFallback | null = null
-
-function getStripe(): Stripe {
-  if (!_stripe) {
-    if (!env.STRIPE_SECRET_KEY) {
-      throw new Error('STRIPE_SECRET_KEY is not configured. Run: wrangler secret put STRIPE_SECRET_KEY')
-    }
-    _stripe = new Stripe(env.STRIPE_SECRET_KEY)
-  }
-  return _stripe
-}
 
 function getRpc(): RpcFallback {
   if (!_rpc) {
@@ -103,25 +106,6 @@ async function parseBody<T>(request: Request): Promise<T> {
   return request.json() as Promise<T>
 }
 
-function sanitizeError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err)
-  return message
-    .replace(/sk_\S+/gi, '[REDACTED]')
-    .replace(/whsec_\S+/gi, '[REDACTED]')
-    .replace(/acct_\S+/gi, '[ACCT_REDACTED]')
-    .slice(0, 200)
-}
-
-function stripeErrorStatus(err: unknown): number {
-  if (err instanceof Stripe.errors.StripeError) {
-    if (err.type === 'StripeCardError') return 400
-    if (err.type === 'StripeInvalidRequestError') return 400
-    if (err.type === 'StripeAuthenticationError') return 401
-    if (err.type === 'StripeRateLimitError') return 429
-  }
-  return 500
-}
-
 // ---------------------------------------------------------------------------
 // Stripe Connect scoping
 // ---------------------------------------------------------------------------
@@ -140,7 +124,7 @@ function stripeErrorStatus(err: unknown): number {
  * Returns Stripe request options with `stripeAccount` set, or undefined
  * if no connected account is specified (platform account is used).
  */
-function getConnectOptions(request: Request, body?: Record<string, unknown>): Stripe.RequestOptions | undefined {
+function getConnectOptions(request: Request, body?: { stripeAccount?: unknown }): Stripe.RequestOptions | undefined {
   // Priority 1: Stripe-Account header (standard Stripe convention)
   const headerAccount = request.headers.get('Stripe-Account')
   if (headerAccount) {
@@ -154,6 +138,11 @@ function getConnectOptions(request: Request, body?: Record<string, unknown>): St
   }
 
   return undefined
+}
+
+/** The connected account a gated REST request pivots to, if any (header, then body field). */
+function connectAccount(request: Request, body?: { stripeAccount?: unknown }): string | undefined {
+  return getConnectOptions(request, body)?.stripeAccount
 }
 
 /**
@@ -313,15 +302,13 @@ route('GET', '/', async () => {
 // --- Customers ---
 
 route('POST', '/customers', async (request) => {
-  const body = await parseBody<{ email?: string; name?: string; metadata?: Record<string, string>; stripeAccount?: string }>(request)
-  const opts = getConnectOptions(request, body)
-  const customer = await getStripe().customers.create(stripConnectField(body), opts)
+  const body = await parseBody<CreateCustomerInput>(request)
+  const customer = await ops.createCustomer({ ...body, stripeAccount: connectAccount(request, body) })
   return json(customer, 201)
 })
 
 route('GET', '/customers/:id', async (request, params) => {
-  const opts = getConnectOptions(request)
-  const customer = await getStripe().customers.retrieve(params.id, opts)
+  const customer = await ops.getCustomer({ id: params.id, stripeAccount: connectAccount(request) })
   return json(customer)
 })
 
@@ -335,15 +322,13 @@ route('PATCH', '/customers/:id', async (request, params) => {
 // --- Subscriptions ---
 
 route('POST', '/subscriptions', async (request) => {
-  const body = await parseBody<{ customer: string; items: Array<{ price: string }>; metadata?: Record<string, string>; stripeAccount?: string }>(request)
-  const opts = getConnectOptions(request, body)
-  const subscription = await getStripe().subscriptions.create(stripConnectField(body), opts)
+  const body = await parseBody<CreateSubscriptionInput>(request)
+  const subscription = await ops.createSubscription({ ...body, stripeAccount: connectAccount(request, body) })
   return json(subscription, 201)
 })
 
 route('GET', '/subscriptions/:id', async (request, params) => {
-  const opts = getConnectOptions(request)
-  const subscription = await getStripe().subscriptions.retrieve(params.id, opts)
+  const subscription = await ops.getSubscription({ id: params.id, stripeAccount: connectAccount(request) })
   return json(subscription)
 })
 
@@ -403,8 +388,7 @@ route('POST', '/charges', async (request) => {
 })
 
 route('GET', '/charges/:id', async (request, params) => {
-  const opts = getConnectOptions(request)
-  const charge = await getStripe().charges.retrieve(params.id, opts)
+  const charge = await ops.getCharge({ id: params.id, stripeAccount: connectAccount(request) })
   return json(charge)
 })
 
@@ -418,8 +402,7 @@ route('POST', '/invoices', async (request) => {
 })
 
 route('GET', '/invoices/:id', async (request, params) => {
-  const opts = getConnectOptions(request)
-  const invoice = await getStripe().invoices.retrieve(params.id, opts)
+  const invoice = await ops.getInvoice({ id: params.id, stripeAccount: connectAccount(request) })
   return json(invoice)
 })
 
@@ -445,8 +428,7 @@ route('POST', '/products', async (request) => {
 })
 
 route('GET', '/products/:id', async (request, params) => {
-  const opts = getConnectOptions(request)
-  const product = await getStripe().products.retrieve(params.id, opts)
+  const product = await ops.getProduct({ id: params.id, stripeAccount: connectAccount(request) })
   return json(product)
 })
 
@@ -467,8 +449,7 @@ route('POST', '/prices', async (request) => {
 })
 
 route('GET', '/prices/:id', async (request, params) => {
-  const opts = getConnectOptions(request)
-  const price = await getStripe().prices.retrieve(params.id, opts)
+  const price = await ops.getPrice({ id: params.id, stripeAccount: connectAccount(request) })
   return json(price)
 })
 
@@ -628,7 +609,58 @@ route('POST', '/webhooks', async (request) => {
 })
 
 // ---------------------------------------------------------------------------
-// Worker entry point
+// Internal RPC entrypoint (service-binding consumers)
+// ---------------------------------------------------------------------------
+
+/** Run one operation for an RPC caller; Stripe failures cross the boundary sanitized. */
+async function rpc<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation()
+  } catch (err) {
+    throw new ops.PaymentsError(sanitizeError(err), stripeErrorStatus(err))
+  }
+}
+
+/**
+ * The surface service-binding consumers call (dot-do/payments.do#2):
+ *
+ *   { "binding": "PAYMENTS", "service": "payments-do", "entrypoint": "PaymentsInternal" }
+ *
+ * Only Workers on this Cloudflare account can bind it, so the binding is the
+ * authorization boundary — no bearer, and deliberately no `fetch` handler:
+ * a consumer holding this binding can call these methods and nothing else.
+ * The connected-account pivot is the explicit `stripeAccount` input field;
+ * headers never reach this class. Contract: src/rpc-types.ts.
+ */
+export class PaymentsInternal extends WorkerEntrypoint<Cloudflare.Env> implements PaymentsInternalApi {
+  createCustomer(input: CreateCustomerInput): Promise<StripeObjectRef> {
+    return rpc(() => ops.createCustomer(input))
+  }
+  createSubscription(input: CreateSubscriptionInput): Promise<SubscriptionRef> {
+    return rpc(() => ops.createSubscription(input))
+  }
+  getCustomer(input: RetrieveInput): Promise<StripeObjectRef> {
+    return rpc(() => ops.getCustomer(input))
+  }
+  getSubscription(input: RetrieveInput): Promise<SubscriptionRef> {
+    return rpc(() => ops.getSubscription(input))
+  }
+  getInvoice(input: RetrieveInput): Promise<StripeObjectRef> {
+    return rpc(() => ops.getInvoice(input))
+  }
+  getCharge(input: RetrieveInput): Promise<StripeObjectRef> {
+    return rpc(() => ops.getCharge(input))
+  }
+  getProduct(input: RetrieveInput): Promise<StripeObjectRef> {
+    return rpc(() => ops.getProduct(input))
+  }
+  getPrice(input: RetrieveInput): Promise<StripeObjectRef> {
+    return rpc(() => ops.getPrice(input))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Worker entry point (public HTTP surface)
 // ---------------------------------------------------------------------------
 
 export default {

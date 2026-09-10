@@ -52,7 +52,7 @@ vi.mock('rpc.do', () => ({
 
 const mockEnv: Record<string, unknown> = {}
 
-vi.mock('cloudflare:workers', () => ({ env: mockEnv }))
+vi.mock('cloudflare:workers', () => ({ env: mockEnv, WorkerEntrypoint: class {} }))
 
 type Worker = { default: { fetch: (request: Request, envArg?: unknown, ctx?: unknown) => Promise<Response> } }
 

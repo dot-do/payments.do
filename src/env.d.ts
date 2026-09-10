@@ -6,8 +6,11 @@
  *   wrangler secret put STRIPE_SECRET_KEY       (PW-5 step 1)
  *   wrangler secret put STRIPE_WEBHOOK_SECRET   (PW-5 step 1)
  *   wrangler secret put VIN_SETTLE_TOKEN        (bearer for the vin ledger confirm forward)
- *   wrangler secret put PAYMENTS_API_TOKEN      (inbound bearer every caller must present;
- *                                                unset → every gated route answers 401)
+ *
+ * Deliberately NOT set: PAYMENTS_API_TOKEN. Unset, every REST route outside
+ * the public allowlist answers 401, which is the intended permanent state —
+ * consumers use the `PaymentsInternal` RPC entrypoint over a service binding
+ * (src/rpc-types.ts) instead of HTTP (payments.do#2).
  *
  * Vars (wrangler.jsonc):
  *   VIN_SETTLE_URL — the vin estate settlement-confirm endpoint the webhook
@@ -29,9 +32,10 @@ declare global {
       /** Bearer token for the vin settlement forward (secret; founder act). */
       VIN_SETTLE_TOKEN?: string
       /**
-       * Inbound caller bearer (secret; founder act). Every route outside the
-       * PUBLIC_ROUTES allowlist in src/index.ts requires
-       * `Authorization: Bearer <PAYMENTS_API_TOKEN>`. Unset → fail closed (401).
+       * Inbound caller bearer for the REST pass-through routes. Deliberately
+       * unset (fail closed, 401): consumers call the `PaymentsInternal` RPC
+       * entrypoint over a service binding instead. Kept only so the gate in
+       * src/index.ts stays fail-closed rather than absent.
        */
       PAYMENTS_API_TOKEN?: string
     }

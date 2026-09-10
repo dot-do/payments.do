@@ -20,17 +20,22 @@ pnpm typecheck    # Type check
 
 ## Service Binding
 
-Other workers bind to this service:
+Other workers bind the `PaymentsInternal` Workers RPC entrypoint
+(`src/index.ts`; contract in `src/rpc-types.ts`, copy it into the consumer):
 ```jsonc
-{ "binding": "PAYMENTS", "service": "payments-do" }
+{ "binding": "PAYMENTS", "service": "payments-do", "entrypoint": "PaymentsInternal" }
 ```
 
-Usage: `await env.PAYMENTS.fetch('/charges', { method: 'POST', headers: { Authorization: `Bearer ${env.PAYMENTS_API_TOKEN}`, 'Content-Type': 'application/json' }, body })`
+Usage: `await env.PAYMENTS.createSubscription({ customer: 'cus_123', items: [{ price: 'price_123' }] })`
 
-A binding is not a credential: every route except `POST /webhooks` and
-`GET /checkout` requires `Authorization: Bearer <PAYMENTS_API_TOKEN>`
-(see "Caller auth" below), whether the request arrives over a binding or
-from the public hostname.
+The binding is the authorization boundary: only Workers on this account can
+hold it, the entrypoint has no `fetch` handler and no bearer, and the
+connected-account pivot is the explicit `stripeAccount` input field — never a
+header. Deploy this worker before any consumer that binds the entrypoint.
+
+The REST pass-through routes remain on the default export behind the bearer
+gate (see "Caller auth" below) with `PAYMENTS_API_TOKEN` deliberately unset,
+so from the public hostname only `POST /webhooks` and `GET /checkout` answer.
 
 ## SDK Usage
 
@@ -56,6 +61,8 @@ allowlist is exactly `POST /webhooks` (Stripe-Signature verified) and
 pass-through route, `GET /`, `POST /import`, the RPC fallback — answers
 `401 { "error": "unauthorized", "code": … }` unless the request carries
 `Authorization: Bearer <PAYMENTS_API_TOKEN>` (constant-time compared).
+The token is deliberately never configured, so those routes are 401 for
+everyone; the gate stays so that state is fail-closed rather than absent.
 
 - `PAYMENTS_API_TOKEN` unset → fail closed: 401 on every gated route, logged once.
 - The Stripe Connect pivot (`Stripe-Account` header / `stripeAccount` body
